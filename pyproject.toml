@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "atunnel"
+version = "1.0.0"
+description = "A-tunnel is a tool to expose localhost to the public internet using Cloudflare Quick Tunnels"
+readme = "README.md"
+license = "MIT"
+authors = [
+    {name = "Abodx9", email = "abodx@gmx.de"},
+]
+requires-python = ">=3.9"
