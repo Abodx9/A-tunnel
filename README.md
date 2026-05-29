@@ -3,6 +3,19 @@ A minimal Python package to expose localhost to the public internet using [Cloud
 
 No Cloudflare account required  generates a temporary `*.trycloudflare.com` URL.
 
+## 😂 Why A-tunnel Exists
+
+We've all seen that:
+
+
+https://github.com/user-attachments/assets/6760cfc2-c917-40bf-aff6-9563e0dcfe9d
+
+
+
+**Before**: "Bro, check out my website! http://localhost:3000" 😅
+
+**After**: "Bro, check out my website! https://your-site.trycloudflare.com" ✨
+
 ## Installation
 
 ```bash
@@ -36,6 +49,12 @@ with Tunnel(port=8080) as t:
     print(f"Public URL: {t.public_url}")
     input("Press Enter to stop...")
 ```
+##  Security Notice
 
-## On Pypi:
-[A-tunnel](https://pypi.org/project/atunnel/)
+**A-tunnel exposes your local development server to the public internet!** 
+
+Please keep the following in mind:
+- **Don't expose sensitive data**: Never use A-tunnel with development servers that have access to production databases, API keys, or sensitive information
+- **Use authentication**: Ensure your development application has proper authentication enabled
+- **Not for production**: This tool is designed for development and testing purposes only
+
