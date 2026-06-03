@@ -1,7 +1,9 @@
 # A-tunnel
 A minimal Python package to expose localhost to the public internet using [Cloudflare Quick Tunnels](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/).
 
-No Cloudflare account required  generates a temporary `*.trycloudflare.com` URL.
+- Zero config.
+- No more login
+- Fast startup
 
 ## 😂 Why A-tunnel Exists
 
