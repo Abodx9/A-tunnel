@@ -3,6 +3,7 @@ CLI entry point for atunnel.
 
 Usage:
     atunnel --port 8080
+    atunnel --auto
 """
 
 import argparse
@@ -10,20 +11,71 @@ import os
 import socket
 import signal
 import sys
+import time
+import threading
 from importlib.metadata import PackageNotFoundError, version
 
 from atunnel import __version__
 from atunnel.tunnel import Tunnel
 
 
-_RESET = "\033[0m"
-_BOLD = "\033[1m"
-_WHITE = "\033[97m"
-_CYAN = "\033[36m"
-_DIM = "\033[2m"
-_GREEN = "\033[32m"
-_YELLOW = "\033[33m"
-_RED = "\033[31m"
+# ─── ANSI colour palette ────────────────────────────────────────────────────
+
+_RESET  = "\033[0m"
+_BOLD   = "\033[1m"
+_DIM    = "\033[2m"
+_ITALIC = "\033[3m"
+
+# Foreground colours
+_WHITE   = "\033[97m"
+_CYAN    = "\033[96m"      # bright cyan
+_BLUE    = "\033[94m"      # bright blue
+_GREEN   = "\033[92m"      # bright green
+_YELLOW  = "\033[93m"      # bright yellow
+_RED     = "\033[91m"      # bright red
+_MAGENTA = "\033[95m"      # bright magenta
+_GRAY    = "\033[90m"      # dark gray
+
+# Background colours (used for the URL highlight)
+_BG_GREEN  = "\033[42m"
+_BG_BLUE   = "\033[44m"
+
+
+# ─── Well-known ports for --auto detection ──────────────────────────────────
+
+_AUTO_PORTS = [
+    (3000,  "Node / React / Next.js"),
+    (3001,  "Node / CRA alt"),
+    (4000,  "Phoenix / Gatsby"),
+    (4200,  "Angular CLI"),
+    (5000,  "Flask / Python"),
+    (5001,  "Flask alt"),
+    (5173,  "Vite"),
+    (5174,  "Vite alt"),
+    (6006,  "Storybook"),
+    (7860,  "Gradio"),
+    (8000,  "Django / Python"),
+    (8001,  "Django alt"),
+    (8080,  "General / Spring"),
+    (8081,  "General alt"),
+    (8888,  "Jupyter"),
+    (9000,  "PHP / SonarQube"),
+    (9090,  "Prometheus"),
+    (11434, "Ollama"),
+]
+
+
+# ─── Helpers ────────────────────────────────────────────────────────────────
+
+def _supports_color() -> bool:
+    return sys.stderr.isatty() and "NO_COLOR" not in os.environ
+
+
+def _c(text: str, *styles: str) -> str:
+    """Apply ANSI styles only when the terminal supports them."""
+    if not _supports_color():
+        return text
+    return f"{''.join(styles)}{text}{_RESET}"
 
 
 def _installed_version() -> str:
@@ -33,36 +85,7 @@ def _installed_version() -> str:
         return __version__
 
 
-def _color(text: str, *styles: str) -> str:
-    if not sys.stderr.isatty() or "NO_COLOR" in os.environ:
-        return text
-    return f"{''.join(styles)}{text}{_RESET}"
-
-
-def _print_panel() -> None:
-    lines = [
-        "A-tunnel — Fast way to expose your apps to the internet",
-        "               Made by Abodx",
-    ]
-    width = max(len(line) for line in lines) + 2
-    border = _color("+" + "-" * width + "+", _CYAN)
-    print(border, file=sys.stderr)
-    print(
-        _color("| ", _CYAN)
-        + _color(lines[0].ljust(width - 2), _BOLD, _WHITE)
-        + _color(" |", _CYAN),
-        file=sys.stderr,
-    )
-    print(
-        _color("| ", _CYAN)
-        + _color(lines[1].ljust(width - 2), _DIM)
-        + _color(" |", _CYAN),
-        file=sys.stderr,
-    )
-    print(border, file=sys.stderr)
-
-
-def _local_server_exists(host: str, port: int, timeout: float = 1.0) -> bool:
+def _local_server_exists(host: str, port: int, timeout: float = 0.4) -> bool:
     try:
         with socket.create_connection((host, port), timeout=timeout):
             return True
@@ -70,16 +93,185 @@ def _local_server_exists(host: str, port: int, timeout: float = 1.0) -> bool:
         return False
 
 
+def _scan_ports(host: str) -> list[tuple[int, str]]:
+    """Return list of (port, label) for every open port in _AUTO_PORTS."""
+    found = []
+    for port, label in _AUTO_PORTS:
+        if _local_server_exists(host, port, timeout=0.4):
+            found.append((port, label))
+    return found
+
+
+# ─── UI primitives ──────────────────────────────────────────────────────────
+
+_BANNER = r"""
+   _    _____                       _
+  /_\  /__   \_   _ _ __  _ __   ___| |
+ //_\\   / /\/ | | | '_ \| '_ \ / _ \ |
+/  _  \ / /  | |_| | | | | | | |  __/ |
+\_/ \_/ \/    \__,_|_| |_|_| |_|\___|_|
+"""
+
+
+def _print_banner() -> None:
+    ver = _installed_version()
+    if _supports_color():
+        # Gradient-like: first two lines cyan, last three blue
+        lines = _BANNER.splitlines()
+        coloured = []
+        colours = [_CYAN, _CYAN, _BLUE, _BLUE, _BLUE]
+        for i, line in enumerate(lines):
+            col = colours[i] if i < len(colours) else _CYAN
+            coloured.append(_c(line, col, _BOLD))
+        print("\n".join(coloured), file=sys.stderr)
+    else:
+        print(_BANNER, file=sys.stderr)
+
+    # Tagline row
+    tag  = _c("  Fast localhost → internet tunnels via Cloudflare  ", _DIM, _ITALIC)
+    ver_badge = _c(f" v{ver} ", _BOLD, _CYAN)
+    by   = _c("  by Abodx9", _GRAY)
+    print(f"{tag}{ver_badge}{by}", file=sys.stderr)
+    print(_c("  " + "─" * 52, _GRAY), file=sys.stderr)
+    print(file=sys.stderr)
+
+
+def _print_table(rows: list[tuple[int, str]], selected: int | None = None) -> None:
+    """Print a styled table of discovered ports."""
+    col_w = [6, 8, 30]  # Port | Status | App
+    hdr   = ["PORT", "STATUS", "APP / FRAMEWORK"]
+    sep   = _c("  ├" + "─" * (col_w[0]+2) + "┼" + "─" * (col_w[1]+2) + "┼" + "─" * (col_w[2]+2) + "┤", _GRAY)
+    top   = _c("  ┌" + "─" * (col_w[0]+2) + "┬" + "─" * (col_w[1]+2) + "┬" + "─" * (col_w[2]+2) + "┐", _GRAY)
+    bot   = _c("  └" + "─" * (col_w[0]+2) + "┴" + "─" * (col_w[1]+2) + "┴" + "─" * (col_w[2]+2) + "┘", _GRAY)
+
+    def _row(p: str, s: str, a: str, pc=_WHITE, sc=_WHITE, ac=_WHITE) -> str:
+        pipe = _c(" │ ", _GRAY)
+        return (
+            _c("  │ ", _GRAY)
+            + _c(p.ljust(col_w[0]), pc, _BOLD)
+            + pipe
+            + _c(s.ljust(col_w[1]), sc)
+            + pipe
+            + _c(a.ljust(col_w[2]), ac)
+            + _c(" │", _GRAY)
+        )
+
+    print(top, file=sys.stderr)
+    print(_row(hdr[0], hdr[1], hdr[2], _CYAN, _CYAN, _CYAN), file=sys.stderr)
+
+    for port, label in rows:
+        print(sep, file=sys.stderr)
+        is_sel = port == selected
+        star = " ★" if is_sel else "  "
+        port_str = f"{port}{star}"
+        status_str = "● OPEN"
+        p_col  = _YELLOW if is_sel else _GREEN
+        s_col  = _GREEN
+        a_col  = _WHITE if not is_sel else _YELLOW
+        print(_row(port_str, status_str, label, p_col, s_col, a_col), file=sys.stderr)
+
+    print(bot, file=sys.stderr)
+
+
+def _print_status_box(port: int, protocol: str, host: str, url: str | None = None) -> None:
+    """Print a summary status box once the tunnel is live."""
+    lines = []
+    lines.append(("  Local",  f"{protocol}://{host}:{port}"))
+    if url:
+        lines.append(("  Public", url))
+
+    key_w = max(len(k) for k, _ in lines) + 1
+    val_w = max(len(v) for _, v in lines) + 1
+    total = key_w + val_w + 3
+
+    top = _c("  ╔" + "═" * total + "╗", _GREEN)
+    bot = _c("  ╚" + "═" * total + "╝", _GREEN)
+    mid = _c("  ╠" + "═" * total + "╣", _GREEN)
+
+    def _box_row(k: str, v: str, v_col=_WHITE) -> str:
+        pipe = _c(" ║ ", _GREEN)
+        return (
+            _c("  ║ ", _GREEN)
+            + _c(k.ljust(key_w), _DIM)
+            + _c("→ ", _GRAY)
+            + _c(v.ljust(val_w), v_col, _BOLD)
+            + _c(" ║", _GREEN)
+        )
+
+    print(top, file=sys.stderr)
+    for i, (k, v) in enumerate(lines):
+        if i == 1:
+            print(mid, file=sys.stderr)
+        v_col = _CYAN if i == 0 else _GREEN
+        print(_box_row(k, v, v_col), file=sys.stderr)
+    print(bot, file=sys.stderr)
+
+
+class _Spinner:
+    """A simple terminal spinner that runs in a background thread."""
+
+    _FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+    def __init__(self, message: str) -> None:
+        self._msg     = message
+        self._stop    = threading.Event()
+        self._thread  = threading.Thread(target=self._spin, daemon=True)
+
+    def _spin(self) -> None:
+        i = 0
+        while not self._stop.is_set():
+            frame = self._FRAMES[i % len(self._FRAMES)]
+            line  = _c(f"  {frame} ", _CYAN) + _c(self._msg, _DIM)
+            sys.stderr.write(f"\r{line}  ")
+            sys.stderr.flush()
+            time.sleep(0.08)
+            i += 1
+
+    def start(self) -> "_Spinner":
+        if _supports_color():
+            self._thread.start()
+        else:
+            sys.stderr.write(f"  {self._msg}\n")
+            sys.stderr.flush()
+        return self
+
+    def stop(self, final_line: str = "") -> None:
+        self._stop.set()
+        if _supports_color() and self._thread.is_alive():
+            self._thread.join(timeout=1)
+            sys.stderr.write(f"\r{' ' * 60}\r")  # clear spinner line
+            sys.stderr.flush()
+        if final_line:
+            print(final_line, file=sys.stderr)
+
+
+# ─── Main ───────────────────────────────────────────────────────────────────
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="atunnel",
         description="Expose a local port to the internet via Cloudflare Quick Tunnels.",
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    port_group = parser.add_mutually_exclusive_group(required=True)
+    port_group.add_argument(
+        "--port", "-p",
+        type=int,
+        help="Local port to expose (e.g. --port 8080)",
+    )
+    port_group.add_argument(
+        "--auto", "-a",
+        action="store_true",
+        help=(
+            "Auto-detect an open local port from a list of well-known\n"
+            "dev-server ports and tunnel the first one found."
+        ),
     )
     parser.add_argument(
-        "--port", type=int, required=True, help="Local port to expose"
-    )
-    parser.add_argument(
-        "--host", type=str, default="localhost", help="Local host (default: localhost)"
+        "--host",
+        type=str,
+        default="localhost",
+        help="Local host to tunnel (default: localhost)",
     )
     parser.add_argument(
         "--protocol",
@@ -96,11 +288,61 @@ def main() -> int:
 
     args = parser.parse_args()
 
-    if not 1 <= args.port <= 65535:
-        parser.error("--port must be between 1 and 65535")
+    _print_banner()
 
-    tunnel = Tunnel(port=args.port, host=args.host, protocol=args.protocol)
+    # ── Resolve port ──────────────────────────────────────────────────────
 
+    if args.auto:
+        spinner = _Spinner("Scanning local ports for running servers…").start()
+        time.sleep(0.3)  # let spinner render at least one frame
+        open_ports = _scan_ports(args.host)
+        spinner.stop()
+
+        if not open_ports:
+            print(
+                _c("\n  ✗ No running dev server detected on any well-known port.", _RED, _BOLD),
+                file=sys.stderr,
+            )
+            print(
+                _c(
+                    "  Tip: start your app first, then run  atunnel --auto\n"
+                    "       or specify a port manually:      atunnel --port <PORT>",
+                    _GRAY,
+                ),
+                file=sys.stderr,
+            )
+            return 1
+
+        selected_port = open_ports[0][0]
+
+        print(
+            _c(f"\n  Found {len(open_ports)} open port(s):\n", _CYAN, _BOLD),
+            file=sys.stderr,
+        )
+        _print_table(open_ports, selected=selected_port)
+        print(
+            _c(f"\n  ★  Auto-selected port {selected_port} — tunnelling it now.\n", _YELLOW, _BOLD),
+            file=sys.stderr,
+        )
+
+        port = selected_port
+
+    else:
+        port = args.port
+        if not 1 <= port <= 65535:
+            parser.error("--port must be between 1 and 65535")
+
+        if not _local_server_exists(args.host, port):
+            print(
+                _c(f"\n  ✗ No server found on {args.host}:{port}.\n"
+                   f"    Make sure your app is running, then try again.", _RED, _BOLD),
+                file=sys.stderr,
+            )
+            return 1
+
+    # ── Start tunnel ──────────────────────────────────────────────────────
+
+    tunnel  = Tunnel(port=port, host=args.host, protocol=args.protocol)
     shutdown = False
 
     def _handle_signal(signum, frame):
@@ -108,58 +350,49 @@ def main() -> int:
         if shutdown:
             sys.exit(1)
         shutdown = True
-        print("\nShutting down tunnel...", file=sys.stderr)
+        print(_c("\n\n  Shutting down tunnel…", _YELLOW), file=sys.stderr)
         tunnel.stop()
 
-    signal.signal(signal.SIGINT, _handle_signal)
+    signal.signal(signal.SIGINT,  _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
 
+    spinner = _Spinner(
+        "Connecting to Cloudflare and verifying tunnel is reachable…"
+    ).start()
+
     try:
-        _print_panel()
-        if not _local_server_exists(args.host, args.port):
-            print(
-                _color(
-                    f"No localhost server or app was found on {args.host}:{args.port}.",
-                    _RED,
-                    _BOLD,
-                ),
-                file=sys.stderr,
-            )
-            return 1
-
-        print(
-            _color(
-                f"Starting tunnel for {args.protocol}://{args.host}:{args.port}...",
-                _YELLOW,
-            ),
-            file=sys.stderr,
-        )
-        print(
-            _color("Waiting for Cloudflare to assign a URL and verifying it's reachable...", _DIM),
-            file=sys.stderr,
-        )
         url = tunnel.start()
-
-        print(_color("\n✓ Tunnel is live at:", _GREEN, _BOLD), file=sys.stderr)
-        print(url)
-        sys.stdout.flush()
-        print(_color("Press Ctrl+C to stop.", _DIM), file=sys.stderr)
-
-        # Block until tunnel exits or user interrupts
-        import time
-
-        while tunnel.is_running and not shutdown:
-            time.sleep(1)
-
-        if not shutdown and not tunnel.is_running:
-            print("Tunnel process exited unexpectedly.", file=sys.stderr)
-            return 1
     except RuntimeError as e:
-        print(f"Error: {e}", file=sys.stderr)
+        spinner.stop()
+        print(_c(f"\n  ✗ Error: {e}", _RED, _BOLD), file=sys.stderr)
         return 1
-    finally:
-        tunnel.stop()
 
+    spinner.stop()
+
+    # Print the live status box
+    print(file=sys.stderr)
+    _print_status_box(port, args.protocol, args.host, url)
+    print(
+        _c("\n  ✓ Tunnel is live! Copy the public URL above.", _GREEN, _BOLD),
+        file=sys.stderr,
+    )
+    print(_c("  Press Ctrl+C to stop.\n", _DIM), file=sys.stderr)
+
+    # Emit the URL on stdout (machine-readable)
+    print(url)
+    sys.stdout.flush()
+
+    # ── Keep alive ────────────────────────────────────────────────────────
+
+    while tunnel.is_running and not shutdown:
+        time.sleep(1)
+
+    if not shutdown and not tunnel.is_running:
+        print(_c("  ✗ Tunnel process exited unexpectedly.", _RED), file=sys.stderr)
+        return 1
+
+    tunnel.stop()
+    print(_c("\n  Goodbye! 👋\n", _CYAN), file=sys.stderr)
     return 0
 
 

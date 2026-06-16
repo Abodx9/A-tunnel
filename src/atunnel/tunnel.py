@@ -56,7 +56,13 @@ class Tunnel:
         """Start the tunnel and return the public URL."""
         binary = ensure_binary()
         local_url = f"{self.protocol}://{self.host}:{self.port}"
-        cmd = [str(binary), "tunnel", "--url", local_url, "--no-autoupdate"]
+        cmd = [
+            str(binary),
+            "tunnel",
+            "--url", local_url,
+            "--no-autoupdate",
+            "--http-host-header", "localhost",
+        ]
 
         self._process = subprocess.Popen(
             cmd,
