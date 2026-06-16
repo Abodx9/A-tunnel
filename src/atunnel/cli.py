@@ -134,9 +134,13 @@ def main() -> int:
             ),
             file=sys.stderr,
         )
+        print(
+            _color("Waiting for Cloudflare to assign a URL and verifying it's reachable...", _DIM),
+            file=sys.stderr,
+        )
         url = tunnel.start()
 
-        print(_color("\nTunnel is live under:", _GREEN), file=sys.stderr)
+        print(_color("\n✓ Tunnel is live at:", _GREEN, _BOLD), file=sys.stderr)
         print(url)
         sys.stdout.flush()
         print(_color("Press Ctrl+C to stop.", _DIM), file=sys.stderr)

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "atunnel"
-version = "1.0.0"
+version = "1.0.1"
 description = "A-tunnel is a tool to expose localhost to the public internet using Cloudflare Quick Tunnels"
 readme = "README.md"
 license = "MIT"
