@@ -3,30 +3,23 @@ Starts a cloudflared quick tunnel subprocess and parses the public URL.
 """
 
 import re
+import os
 import subprocess
 import threading
 import time
-import urllib.request
-import urllib.error
-from pathlib import Path
 from typing import Optional
 
 from atunnel.binary import ensure_binary
 
 
 _URL_PATTERN = re.compile(
-    r"https://[-a-zA-Z0-9@:%._\+~#=]{1,256}\.trycloudflare\.com"
+    r"https://(?!api\.)[a-zA-Z0-9-]+\.trycloudflare\.com\b"
 )
 
-# Seconds to wait after URL is found before returning it, giving Cloudflare's
-# edge time to actually route traffic to the tunnel.
-_URL_PROPAGATION_DELAY = 2.0
-
-# How long to wait between reachability probe attempts.
-_REACHABILITY_PROBE_INTERVAL = 1.0
-
-# How many times to probe reachability before giving up and returning URL anyway.
-_REACHABILITY_MAX_PROBES = 10
+# Seconds to wait after URL is found before returning it. Do not actively probe
+# DNS here: on Windows, an early NXDOMAIN can be cached and make a fresh
+# trycloudflare hostname look broken even after Cloudflare publishes it.
+_URL_PROPAGATION_DELAY = 5.0
 
 
 class Tunnel:
@@ -66,10 +59,11 @@ class Tunnel:
 
         self._process = subprocess.Popen(
             cmd,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
+            bufsize=0,
+            env={**os.environ, "NO_AUTOUPDATE": "true"},
         )
 
         # Read both stdout and stderr — different cloudflared versions use different streams
@@ -109,72 +103,80 @@ class Tunnel:
         self._public_url = None
 
     def _read_stream(self, stream) -> None:
-        """Read lines from a stream (stdout or stderr), storing them and scanning for URL."""
+        """Read a stream, storing log lines and scanning raw chunks for the URL."""
         if stream is None:
             return
+        pending_line = ""
+        search_buffer = ""
+
+        def store_line(line: str) -> None:
+            line = line.strip()
+            if not line:
+                return
+            with self._lock:
+                self._output_lines.append(line)
+
         try:
-            for line in stream:
-                line = line.strip()
-                if not line:
-                    continue
-                with self._lock:
-                    self._output_lines.append(line)
-                # Check this line for the URL — no need to re-scan all lines
+            while True:
+                chunk = stream.read(1024)
+                if not chunk:
+                    break
+
+                if isinstance(chunk, bytes):
+                    text = chunk.decode("utf-8", errors="replace")
+                else:
+                    text = chunk
+
+                # Match against chunks instead of only completed lines. Some
+                # cloudflared output can arrive without a newline before the
+                # startup timeout, while Node's OpenTunnel sees it as a data
+                # event immediately.
+                search_buffer = (search_buffer + text)[-2048:]
                 if not self._url_found_event.is_set():
-                    match = _URL_PATTERN.search(line)
+                    match = _URL_PATTERN.search(search_buffer)
                     if match:
                         self._found_url = match.group(0)
                         self._url_found_event.set()
+
+                pending_line += text
+                lines = pending_line.splitlines(keepends=True)
+                if lines and not lines[-1].endswith(("\n", "\r")):
+                    pending_line = lines.pop()
+                else:
+                    pending_line = ""
+                for line in lines:
+                    store_line(line)
+
+            store_line(pending_line)
         except (ValueError, OSError):
             pass
 
     def _wait_for_url(self, timeout: float) -> Optional[str]:
         """
-        Wait until cloudflared emits a public URL, then verify it is reachable
-        before returning it. This avoids handing back a URL that Cloudflare's
-        edge hasn't finished routing yet.
+        Wait until cloudflared emits a public URL, then give Cloudflare a brief
+        moment to publish the quick-tunnel hostname before returning it.
         """
         deadline = time.monotonic() + timeout
 
-        # Wait for the URL to appear in output
-        remaining = deadline - time.monotonic()
-        url_appeared = self._url_found_event.wait(timeout=max(remaining, 0))
-
-        if not url_appeared:
+        while time.monotonic() < deadline:
+            if self._url_found_event.wait(timeout=0.1):
+                break
+            if not self.is_running:
+                return None
+        else:
             return None
 
         url = self._found_url
         if url is None:
             return None
 
-        # Give Cloudflare's edge a moment to propagate the tunnel before probing
-        time.sleep(_URL_PROPAGATION_DELAY)
-
-        import socket
-        from urllib.parse import urlparse
-
-        parsed_url = urlparse(url)
-        hostname = parsed_url.hostname
-
-        # Probe the URL to confirm it is actually reachable via DNS.
-        # trycloudflare domains can take up to 30 seconds to propagate.
-        for _ in range(30):
+        # Give Cloudflare's edge a moment to propagate the tunnel.
+        delay_deadline = time.monotonic() + _URL_PROPAGATION_DELAY
+        while time.monotonic() < delay_deadline:
             if not self.is_running:
-                # cloudflared died — no point waiting
-                break
-            if time.monotonic() >= deadline:
-                break
-            try:
-                # If DNS resolves, Cloudflare's edge is ready to route it
-                if hostname:
-                    socket.gethostbyname(hostname)
-                return url
-            except socket.gaierror:
-                # NXDOMAIN or other DNS error — wait and retry
-                pass
-            time.sleep(1.0)
+                return None
+            time.sleep(0.1)
 
-        # Return the URL anyway — user can try; Cloudflare may still be propagating
         return url
 
     def __enter__(self):
