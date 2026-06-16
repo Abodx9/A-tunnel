@@ -150,27 +150,29 @@ class Tunnel:
         # Give Cloudflare's edge a moment to propagate the tunnel before probing
         time.sleep(_URL_PROPAGATION_DELAY)
 
-        # Probe the URL to confirm it is actually reachable
-        for _ in range(_REACHABILITY_MAX_PROBES):
+        import socket
+        from urllib.parse import urlparse
+
+        parsed_url = urlparse(url)
+        hostname = parsed_url.hostname
+
+        # Probe the URL to confirm it is actually reachable via DNS.
+        # trycloudflare domains can take up to 30 seconds to propagate.
+        for _ in range(30):
             if not self.is_running:
                 # cloudflared died — no point waiting
                 break
             if time.monotonic() >= deadline:
                 break
             try:
-                req = urllib.request.Request(url, method="HEAD")
-                with urllib.request.urlopen(req, timeout=5) as resp:
-                    if resp.status < 600:
-                        # Any HTTP response (even 4xx/5xx) means the tunnel is up
-                        return url
-            except urllib.error.HTTPError as e:
-                # An HTTP error from Cloudflare's edge means the tunnel IS routed
-                if e.code != 520:  # 520 = "web server returned unknown error"
-                    return url
-            except (urllib.error.URLError, OSError):
-                # Not reachable yet — wait and retry
+                # If DNS resolves, Cloudflare's edge is ready to route it
+                if hostname:
+                    socket.gethostbyname(hostname)
+                return url
+            except socket.gaierror:
+                # NXDOMAIN or other DNS error — wait and retry
                 pass
-            time.sleep(_REACHABILITY_PROBE_INTERVAL)
+            time.sleep(1.0)
 
         # Return the URL anyway — user can try; Cloudflare may still be propagating
         return url

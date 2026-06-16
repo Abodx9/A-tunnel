@@ -175,36 +175,11 @@ def _print_table(rows: list[tuple[int, str]], selected: int | None = None) -> No
 
 def _print_status_box(port: int, protocol: str, host: str, url: str | None = None) -> None:
     """Print a summary status box once the tunnel is live."""
-    lines = []
-    lines.append(("  Local",  f"{protocol}://{host}:{port}"))
+    print(file=sys.stderr)
+    print(_c("  Local  → ", _DIM) + _c(f"{protocol}://{host}:{port}", _CYAN, _BOLD), file=sys.stderr)
     if url:
-        lines.append(("  Public", url))
-
-    key_w = max(len(k) for k, _ in lines) + 1
-    val_w = max(len(v) for _, v in lines) + 1
-    total = key_w + val_w + 3
-
-    top = _c("  ╔" + "═" * total + "╗", _GREEN)
-    bot = _c("  ╚" + "═" * total + "╝", _GREEN)
-    mid = _c("  ╠" + "═" * total + "╣", _GREEN)
-
-    def _box_row(k: str, v: str, v_col=_WHITE) -> str:
-        pipe = _c(" ║ ", _GREEN)
-        return (
-            _c("  ║ ", _GREEN)
-            + _c(k.ljust(key_w), _DIM)
-            + _c("→ ", _GRAY)
-            + _c(v.ljust(val_w), v_col, _BOLD)
-            + _c(" ║", _GREEN)
-        )
-
-    print(top, file=sys.stderr)
-    for i, (k, v) in enumerate(lines):
-        if i == 1:
-            print(mid, file=sys.stderr)
-        v_col = _CYAN if i == 0 else _GREEN
-        print(_box_row(k, v, v_col), file=sys.stderr)
-    print(bot, file=sys.stderr)
+        print(_c("  Public → ", _DIM) + _c(url, _GREEN, _BOLD), file=sys.stderr)
+    print(file=sys.stderr)
 
 
 class _Spinner:
@@ -239,7 +214,7 @@ class _Spinner:
         self._stop.set()
         if _supports_color() and self._thread.is_alive():
             self._thread.join(timeout=1)
-            sys.stderr.write(f"\r{' ' * 60}\r")  # clear spinner line
+            sys.stderr.write("\r\033[K")  # clear entire spinner line
             sys.stderr.flush()
         if final_line:
             print(final_line, file=sys.stderr)
@@ -378,9 +353,10 @@ def main() -> int:
     )
     print(_c("  Press Ctrl+C to stop.\n", _DIM), file=sys.stderr)
 
-    # Emit the URL on stdout (machine-readable)
-    print(url)
-    sys.stdout.flush()
+    # Emit the URL to stdout if not in a tty (for machine readability)
+    if not sys.stdout.isatty():
+        print(url)
+        sys.stdout.flush()
 
     # ── Keep alive ────────────────────────────────────────────────────────
 
@@ -392,7 +368,7 @@ def main() -> int:
         return 1
 
     tunnel.stop()
-    print(_c("\n  Goodbye! 👋\n", _CYAN), file=sys.stderr)
+    print(_c("\n  Tschau! \n", _CYAN), file=sys.stderr)
     return 0
 
 
