@@ -19,8 +19,6 @@ from atunnel import __version__
 from atunnel.tunnel import Tunnel
 
 
-# ─── ANSI colour palette ────────────────────────────────────────────────────
-
 _RESET  = "\033[0m"
 _BOLD   = "\033[1m"
 _DIM    = "\033[2m"
@@ -41,7 +39,7 @@ _BG_GREEN  = "\033[42m"
 _BG_BLUE   = "\033[44m"
 
 
-# ─── Well-known ports for --auto detection ──────────────────────────────────
+# Well-known ports for --auto detection 
 
 _AUTO_PORTS = [
     (3000,  "Node / React / Next.js"),
@@ -65,7 +63,6 @@ _AUTO_PORTS = [
 ]
 
 
-# ─── Helpers ────────────────────────────────────────────────────────────────
 
 def _supports_color() -> bool:
     return sys.stderr.isatty() and "NO_COLOR" not in os.environ
@@ -102,14 +99,15 @@ def _scan_ports(host: str) -> list[tuple[int, str]]:
     return found
 
 
-# ─── UI primitives ──────────────────────────────────────────────────────────
 
 _BANNER = r"""
-   _    _____                       _
-  /_\  /__   \_   _ _ __  _ __   ___| |
- //_\\   / /\/ | | | '_ \| '_ \ / _ \ |
-/  _  \ / /  | |_| | | | | | | |  __/ |
-\_/ \_/ \/    \__,_|_| |_|_| |_|\___|_|
+ ______  __                                    ___      
+/\  _  \/\ \__                                /\_ \     
+\ \ \L\ \ \ ,_\  __  __    ___     ___      __\//\ \    
+ \ \  __ \ \ \/ /\ \/\ \ /' _ `\ /' _ `\  /'__`\\ \ \   
+  \ \ \/\ \ \ \_\ \ \_\ \/\ \/\ \/\ \/\ \/\  __/ \_\ \_ 
+   \ \_\ \_\ \__\\ \____/\ \_\ \_\ \_\ \_\ \____\/\____\
+    \/_/\/_/\/__/ \/___/  \/_/\/_/\/_/\/_/\/____/\/____/                                      
 """
 
 
@@ -220,8 +218,6 @@ class _Spinner:
             print(final_line, file=sys.stderr)
 
 
-# ─── Main ───────────────────────────────────────────────────────────────────
-
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="atunnel",
@@ -265,7 +261,7 @@ def main() -> int:
 
     _print_banner()
 
-    # ── Resolve port ──────────────────────────────────────────────────────
+    #  Resolve port 
 
     if args.auto:
         spinner = _Spinner("Scanning local ports for running servers…").start()
@@ -315,7 +311,7 @@ def main() -> int:
             )
             return 1
 
-    # ── Start tunnel ──────────────────────────────────────────────────────
+    #  Start tunnel 
 
     tunnel  = Tunnel(port=port, host=args.host, protocol=args.protocol)
     shutdown = False
@@ -358,7 +354,7 @@ def main() -> int:
         print(url)
         sys.stdout.flush()
 
-    # ── Keep alive ────────────────────────────────────────────────────────
+    #  Keep alive until Ctrl+C
 
     while tunnel.is_running and not shutdown:
         time.sleep(1)
